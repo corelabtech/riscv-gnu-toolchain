@@ -1,11 +1,11 @@
 [submodule "binutils"]
 	path = binutils
-	url = https://sourceware.org/git/binutils-gdb.git
-	branch = binutils-2_42-branch
+	url = ../binutils-gdb.git
+	branch = corelab/binutils-2_44-branch
 [submodule "gcc"]
 	path = gcc
-	url = https://gcc.gnu.org/git/gcc.git
-	branch = releases/gcc-13
+	url = ../gcc.git
+	branch = corelab/gcc-14
 [submodule "glibc"]
 	path = glibc
 	url = https://sourceware.org/git/glibc.git
@@ -15,15 +15,16 @@
 	branch = master
 [submodule "newlib"]
 	path = newlib
-	url = https://sourceware.org/git/newlib-cygwin.git
-	branch = master
+	url = ../newlib-cygwin.git
+	branch = corelab/main
 [submodule "gdb"]
 	path = gdb
-	url = https://sourceware.org/git/binutils-gdb.git
-	branch = gdb-14-branch
+	url = ../binutils-gdb.git
+	branch = corelab/gdb-16-branch
 [submodule "qemu"]
 	path = qemu
-	url = https://gitlab.com/qemu-project/qemu.git
+    url = ../qemu.git
+    branch = at-v1.0
 [submodule "musl"]
 	path = musl
 	url = https://git.musl-libc.org/git/musl
@@ -38,5 +39,8 @@
 	branch = master
 [submodule "llvm"]
 	path = llvm
-	url = https://github.com/llvm/llvm-project.git
-	branch = release/17.x
+	url = ../llvm-project.git
+    branch = corelab/20.x
+[submodule "riscv-openocd"]
+	path = riscv-openocd
+	url = ../riscv-openocd.git

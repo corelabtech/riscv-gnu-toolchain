@@ -95,6 +95,13 @@ AC_ARG_WITH(isa-spec,
 	[with_isa_spec=20191213]
 	)
 
+AC_ARG_WITH(priv-spec,
+	[AS_HELP_STRING([--with-priv-spec=1.12],
+		[Set the default PRIV spec version, default to 1.12, available options: 1.9.1, 1.10, 1.11, 1.12])],
+	[],
+	[with_priv_spec=1.12]
+	)
+
 AC_ARG_WITH(sim,
 	[AS_HELP_STRING([--with-sim=qemu],
 		[Sets the base RISC-V Simulator, defaults to qemu])],
@@ -118,6 +125,7 @@ AC_SUBST(WITH_ARCH, --with-arch=$with_arch)
 AC_SUBST(WITH_ABI, --with-abi=$with_abi)
 AC_SUBST(WITH_TUNE, --with-tune=$with_tune)
 AC_SUBST(WITH_ISA_SPEC, --with-isa-spec=$with_isa_spec)
+AC_SUBST(WITH_PRIV_SPEC, --with-priv-spec=$with_priv_spec)
 AC_SUBST(WITH_SIM, $with_sim)
 
 AC_ARG_ENABLE(multilib,
@@ -215,6 +223,21 @@ AS_IF([test "x$with_host" != xdefault],
 	[AC_SUBST(configure_host,--host=$with_host)],
 	[AC_SUBST(configure_host,"")])
 
+AS_IF([test "x$with_host" != xdefault],
+	[AC_SUBST(with_host,$with_host)],
+	[AC_SUBST(with_host,"")])
+
+AC_ARG_WITH(parallel-jobs,
+	[AS_HELP_STRING([--with-parallel-jobs=1],
+			[The parallel compiling jobs])],
+	[],
+	[with_parallel_jobs=default]
+	)
+
+AS_IF([test "x$with_parallel_jobs" != xdefault],
+	[AC_SUBST(with_parallel_jobs,$with_parallel_jobs)],
+	[AC_SUBST(with_parallel_jobs,1)])
+
 AC_ARG_WITH(system-zlib,
 	[AS_HELP_STRING([--without-system-zlib],
 		[use the builtin copy of zlib from GCC])],
@@ -269,6 +292,16 @@ AS_IF([test "x$enable_host_gcc" != xyes],
 	[AC_SUBST(enable_host_gcc, --disable-host-gcc)],
 	[AC_SUBST(enable_host_gcc, --enable-host-gcc)])
 
+AC_ARG_ENABLE(doc,
+	[AS_HELP_STRING([--enable-doc],
+		[Build and install toolchain pdf documents])],
+	[enable_doc=yes],
+	[])
+
+AS_IF([test "x$enable_doc" != xyes],
+	[AC_SUBST(enable_doc, --disable-doc)],
+	[AC_SUBST(enable_doc, --enable-doc)])
+
 AC_DEFUN([AX_ARG_WITH_SRC],
 	[{m4_pushdef([opt_name], with_$1_src)
 	  AC_ARG_WITH($1-src,
@@ -290,6 +323,7 @@ AX_ARG_WITH_SRC(glibc, glibc)
 AX_ARG_WITH_SRC(musl, musl)
 AX_ARG_WITH_SRC(gdb, gdb)
 AX_ARG_WITH_SRC(qemu, qemu)
+AX_ARG_WITH_SRC(openocd, riscv-openocd)
 AX_ARG_WITH_SRC(spike, spike)
 AX_ARG_WITH_SRC(pk, pk)
 AX_ARG_WITH_SRC(llvm, llvm)
@@ -327,5 +361,16 @@ AC_ARG_ENABLE(qemu_system,
 AS_IF([test "x$enable_qemu_system" != xno],
 	[AC_SUBST(qemu_targets, [riscv64-linux-user,riscv32-linux-user,riscv64-softmmu,riscv32-softmmu])],
 	[AC_SUBST(qemu_targets, [riscv64-linux-user,riscv32-linux-user])])
+
+AC_ARG_WITH(qemu_targets,
+        [AS_HELP_STRING([--with-qemu-targets],
+                        [The QEMU targets to build, will override --enable-qemu-system setting if it is not default])],
+        [],
+        [with_qemu_targets=default]
+        )
+
+AS_IF([test "x$with_qemu_targets" != xdefault],
+        [AC_SUBST(qemu_targets,$with_qemu_targets)],
+        [AC_SUBST(qemu_targets,$qemu_targets)])
 
 AC_OUTPUT

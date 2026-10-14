@@ -1,6 +1,7 @@
 srcdir := @abs_top_srcdir@
 builddir := @abs_top_builddir@
 INSTALL_DIR := @prefix@
+DOC_DIR := $(INSTALL_DIR)/share/doc
 
 GCC_SRCDIR := @with_gcc_src@
 BINUTILS_SRCDIR := @with_binutils_src@
@@ -10,6 +11,7 @@ MUSL_SRCDIR := @with_musl_src@
 LINUX_HEADERS_SRCDIR := @with_linux_headers_src@
 GDB_SRCDIR := @with_gdb_src@
 QEMU_SRCDIR := @with_qemu_src@
+OPENOCD_SRCDIR := @with_openocd_src@
 SPIKE_SRCDIR := @with_spike_src@
 PK_SRCDIR := @with_pk_src@
 LLVM_SRCDIR := @with_llvm_src@
@@ -36,6 +38,7 @@ WITH_ARCH ?= @WITH_ARCH@
 WITH_ABI ?= @WITH_ABI@
 WITH_TUNE ?= @WITH_TUNE@
 WITH_ISA_SPEC ?= @WITH_ISA_SPEC@
+WITH_PRIV_SPEC ?= @WITH_PRIV_SPEC@
 SYSROOT := $(INSTALL_DIR)/sysroot
 ENABLE_LIBSANITIZER ?= @enable_libsanitizer@
 QEMU_TARGETS ?= @qemu_targets@
@@ -104,7 +107,7 @@ NEWLIB_CXX_FOR_TARGET ?= $(NEWLIB_TUPLE)-g++
 NEWLIB_TARGET_BOARDS ?= $(shell $(srcdir)/scripts/generate_target_board \
   --sim-name riscv-sim \
   --cmodel $(shell echo @cmodel@ | cut -d '=' -f2) \
-  --build-arch-abi $(NEWLIB_MULTILIB_NAMES) \
+  --build-arch-abi "$(NEWLIB_MULTILIB_NAMES)" \
   --extra-test-arch-abi-flags-list "$(EXTRA_MULTILIB_TEST)")
 
 NEWLIB_NANO_TARGET_BOARDS ?= $(shell $(srcdir)/scripts/generate_target_board \
@@ -119,7 +122,40 @@ MUSL_CC_FOR_TARGET ?= $(MUSL_TUPLE)-gcc
 MUSL_CXX_FOR_TARGET ?= $(MUSL_TUPLE)-g++
 
 CONFIGURE_HOST   = @configure_host@
+PARALLEL_JOBS = @with_parallel_jobs@
+# if with_parallel_jobs > 8, set PARALLEL_JOBS_LIMITED upto 8
+PARALLEL_JOBS_LIMITED = @with_parallel_jobs@
+ifeq ($(shell expr $(PARALLEL_JOBS_LIMITED) \> 8),1)
+	PARALLEL_JOBS_LIMITED = 8
+endif
+
 PREPARATION_STAMP:=stamps/check-write-permission
+
+FIND_IGNORE = -not \( -name *.o -o -name *.py -o -name *.h -o -name *.specs -o -name *.def \)
+ifneq ($(findstring mingw,@with_host@),)
+	# must use posix version of mingw gcc, disable thread for windows build, build static version with static libgcc/libstdc++
+	LLVM_CMAKE_COMPILE_OPTS = -DCMAKE_C_COMPILER=@with_host@-gcc-posix -DCMAKE_CXX_COMPILER=@with_host@-g++-posix \
+            -DLLVM_ENABLE_THREADS=ON -DLLVM_BUILD_STATIC=ON -DCMAKE_SYSTEM_NAME=Windows
+	EXE_SUFFIX = .exe
+	FIND_STRIP_FILES = find $$chkdir -type f -name "*.exe" -or -name "*.dll" -and $(FIND_IGNORE)
+	STRIP_CMD = @with_host@-strip
+	QEMU_OPTS = --cross-prefix=@with_host@-
+	OPENOCD_OPTS = --host=@with_host@ --enable-internal-jimtcl
+	GENERATE_LLVM_MULTILIB_CMD =
+	GENERATE_LLVM_MULTILIB_CMD_LINUX =
+else
+	LLVM_CMAKE_COMPILE_OPTS =
+	EXE_SUFFIX =
+	FIND_STRIP_FILES = find $$chkdir -type f $(FIND_IGNORE) | xargs file | grep "not stripped" | cut -d ":" -f1
+	STRIP_CMD = @with_host@-strip
+	QEMU_OPTS =
+	OPENOCD_OPTS = --enable-internal-jimtcl
+	GENERATE_LLVM_MULTILIB_CMD = $(INSTALL_DIR)/bin/riscv64-unknown-elf-gcc -print-multi-lib | cut -d ";" -f1 | grep rv | sed "s/^/{ \"/g" | sed "s/$$/\" },/g" | sed "s/\//\", \"/g" > $(LLVM_SRCDIR)/clang/lib/Driver/ToolChains/CLMultilibSet.h
+	GENERATE_LLVM_MULTILIB_CMD_LINUX = $(INSTALL_DIR)/bin/riscv64-unknown-linux-gnu-gcc -print-multi-lib | cut -d ";" -f1 | grep rv | sed "s/^/{ \"/g" | sed "s/$$/\" },/g" | sed "s/\//\", \"/g" > $(LLVM_SRCDIR)/clang/lib/Driver/ToolChains/CLMultilibSet.h
+endif
+ifeq (@enable_doc@,--enable-doc)
+	QEMU_OPTS += --enable-docs
+endif
 
 all: @default_target@
 ifeq (@enable_host_gcc@,--enable-host-gcc)
@@ -145,12 +181,9 @@ ifeq (@enable_llvm@,--enable-llvm)
 all: stamps/build-llvm-@default_target@
 newlib: stamps/build-llvm-newlib
 linux: stamps/build-llvm-linux
-ifeq (@multilib_flags@,--enable-multilib)
-$(error "Setting multilib flags for LLVM builds is not supported.")
-endif
 endif
 
-.PHONY: build-binutils build-gdb build-gcc1 build-libc build-gcc2 build-qemu build-llvm
+.PHONY: build-binutils build-gdb build-gcc1 build-libc build-gcc2 build-qemu build-llvm build-openocd
 build-binutils: stamps/build-binutils-@default_target@
 build-gdb: stamps/build-gdb-@default_target@
 build-gcc%: stamps/build-gcc-@default_target@-stage%
@@ -162,6 +195,7 @@ build-libc: stamps/build-newlib stamps/build-newlib-nano \
 endif
 build-qemu: stamps/build-qemu
 build-llvm: stamps/build-llvm-@default_target@
+build-openocd: stamps/build-openocd
 
 REGRESSION_TEST_LIST = gcc
 
@@ -300,6 +334,12 @@ else
 QEMU_SRC_GIT :=
 endif
 
+ifeq ($(findstring $(srcdir),$(OPENOCD_SRCDIR)),$(srcdir))
+OPENOCD_SRC_GIT := $(OPENOCD_SRCDIR)/.git
+else
+OPENOCD_SRC_GIT :=
+endif
+
 ifeq ($(findstring $(srcdir),$(SPIKE_SRCDIR)),$(srcdir))
 SPIKE_SRC_GIT := $(SPIKE_SRCDIR)/.git
 PK_SRC_GIT := $(PK_SRCDIR)/.git
@@ -320,7 +360,8 @@ DEJAGNU_SRC_GIT :=
 endif
 
 ifneq ("$(wildcard $(GCC_SRCDIR)/.git)","")
-GCCPKGVER := g$(shell git -C $(GCC_SRCDIR) describe --always --dirty --exclude '*')
+# old git doesn't support -C/--exclude options
+GCCPKGVER := g$(shell cd $(GCC_SRCDIR) &&  git describe --always --dirty && cd - > /dev/null)
 else
 GCCPKGVER :=
 endif
@@ -367,9 +408,14 @@ stamps/build-binutils-linux: $(BINUTILS_SRCDIR) $(BINUTILS_SRC_GIT) $(PREPARATIO
 		--disable-sim \
 		--disable-libdecnumber \
 		--disable-readline \
-		$(WITH_ISA_SPEC)
+		--with-static-standard-libraries \
+		$(WITH_ISA_SPEC) \
+		$(WITH_PRIV_SPEC)
 	$(MAKE) -C $(notdir $@)
 	$(MAKE) -C $(notdir $@) install
+ifeq (@enable_doc@,--enable-doc)
+	$(MAKE) -C $(notdir $@) install-pdf
+endif
 	mkdir -p $(dir $@) && touch $@
 
 stamps/build-gdb-linux: $(GDB_SRCDIR) $(GDB_SRC_GIT) $(PREPARATION_STAMP)
@@ -391,9 +437,18 @@ stamps/build-gdb-linux: $(GDB_SRCDIR) $(GDB_SRC_GIT) $(PREPARATION_STAMP)
 		--disable-binutils \
 		--disable-ld \
 		--disable-gold \
+		--with-static-standard-libraries \
+		--disable-source-highlight \
+		--with-libexpat-type=static \
+		--with-libiconv-type=static \
+		--with-libgmp-type=static \
+		--with-libmpfr-type=static \
 		--disable-gprof
 	$(MAKE) -C $(notdir $@)
 	$(MAKE) -C $(notdir $@) install
+ifeq (@enable_doc@,--enable-doc)
+	$(MAKE) -C $(notdir $@) install-pdf
+endif
 	mkdir -p $(dir $@) && touch $@
 
 stamps/build-glibc-linux-headers: $(GLIBC_SRCDIR) $(GLIBC_SRC_GIT) stamps/build-gcc-linux-stage1
@@ -517,6 +572,9 @@ stamps/build-gcc-linux-stage2: $(GCC_SRCDIR) $(GCC_SRC_GIT) $(addprefix stamps/b
 	$(MAKE) -C $(notdir $@)
 	$(MAKE) -C $(notdir $@) install
 	cp -a $(INSTALL_DIR)/$(LINUX_TUPLE)/lib* $(SYSROOT)
+ifeq (@enable_doc@,--enable-doc)
+	$(MAKE) -C $(notdir $@) install-pdf
+endif
 	mkdir -p $(dir $@) && touch $@
 
 stamps/build-binutils-linux-native: $(BINUTILS_SRCDIR) $(BINUTILS_SRC_GIT) stamps/build-gcc-linux-stage2 $(PREPARATION_STAMP)
@@ -537,9 +595,13 @@ stamps/build-binutils-linux-native: $(BINUTILS_SRCDIR) $(BINUTILS_SRC_GIT) stamp
 		--disable-sim \
 		--disable-libdecnumber \
 		--disable-readline \
-		$(WITH_ISA_SPEC)
+		$(WITH_ISA_SPEC) \
+		$(WITH_PRIV_SPEC)
 	$(MAKE) -C $(notdir $@)
 	$(MAKE) -C $(notdir $@) install
+ifeq (@enable_doc@,--enable-doc)
+	$(MAKE) -C $(notdir $@) install-pdf
+endif
 	mkdir -p $(dir $@) && touch $@
 
 stamps/build-gcc-linux-native: $(GCC_SRCDIR) $(GCC_SRC_GIT) stamps/build-gcc-linux-stage2 stamps/build-binutils-linux-native
@@ -560,7 +622,7 @@ stamps/build-gcc-linux-native: $(GCC_SRCDIR) $(GCC_SRC_GIT) stamps/build-gcc-lin
 		--disable-libquadmath \
 		--disable-nls \
 		--disable-bootstrap \
-                --with-native-system-header-dir=$(INSTALL_DIR)/native/include \
+		--with-native-system-header-dir=$(INSTALL_DIR)/native/include \
 		$(GCC_CHECKING_FLAGS) \
 		$(MULTILIB_FLAGS) \
 		$(WITH_ABI) \
@@ -570,6 +632,9 @@ stamps/build-gcc-linux-native: $(GCC_SRCDIR) $(GCC_SRC_GIT) stamps/build-gcc-lin
 		$(GCC_EXTRA_CONFIGURE_FLAGS)
 	$(MAKE) -C $(notdir $@)
 	$(MAKE) -C $(notdir $@) install
+ifeq (@enable_doc@,--enable-doc)
+	$(MAKE) -C $(notdir $@) install-pdf
+endif
 	cp -a $(INSTALL_DIR)/$(LINUX_TUPLE)/lib* $(SYSROOT)
 	mkdir -p $(dir $@) && touch $@
 
@@ -593,9 +658,14 @@ stamps/build-binutils-newlib: $(BINUTILS_SRCDIR) $(BINUTILS_SRC_GIT) $(PREPARATI
 		--disable-sim \
 		--disable-libdecnumber \
 		--disable-readline \
-		$(WITH_ISA_SPEC)
-	$(MAKE) -C $(notdir $@)
+		--with-static-standard-libraries \
+		$(WITH_ISA_SPEC) \
+		$(WITH_PRIV_SPEC)
+	$(MAKE) -C $(notdir $@) -j$(PARALLEL_JOBS)
 	$(MAKE) -C $(notdir $@) install
+ifeq (@enable_doc@,--enable-doc)
+	$(MAKE) -C $(notdir $@) install-pdf
+endif
 	mkdir -p $(dir $@) && touch $@
 
 stamps/build-gdb-newlib: $(GDB_SRCDIR) $(GDB_SRC_GIT) $(PREPARATION_STAMP)
@@ -614,9 +684,18 @@ stamps/build-gdb-newlib: $(GDB_SRCDIR) $(GDB_SRC_GIT) $(PREPARATION_STAMP)
 		--disable-binutils \
 		--disable-ld \
 		--disable-gold \
+		--with-static-standard-libraries \
+		--disable-source-highlight \
+		--with-libexpat-type=static \
+		--with-libiconv-type=static \
+		--with-libgmp-type=static \
+		--with-libmpfr-type=static \
 		--disable-gprof
-	$(MAKE) -C $(notdir $@)
+	$(MAKE) -C $(notdir $@) -j$(PARALLEL_JOBS)
 	$(MAKE) -C $(notdir $@) install
+ifeq (@enable_doc@,--enable-doc)
+	$(MAKE) -C $(notdir $@) install-pdf
+endif
 	mkdir -p $(dir $@) && touch $@
 
 stamps/build-gcc-newlib-stage1: $(GCC_SRCDIR) $(GCC_SRC_GIT) stamps/build-binutils-newlib
@@ -650,7 +729,7 @@ stamps/build-gcc-newlib-stage1: $(GCC_SRCDIR) $(GCC_SRC_GIT) stamps/build-binuti
 		$(GCC_EXTRA_CONFIGURE_FLAGS) \
 		CFLAGS_FOR_TARGET="-Os $(CFLAGS_FOR_TARGET)" \
 		CXXFLAGS_FOR_TARGET="-Os $(CXXFLAGS_FOR_TARGET)"
-	$(MAKE) -C $(notdir $@) all-gcc
+	$(MAKE) -C $(notdir $@) all-gcc -j$(PARALLEL_JOBS_LIMITED)
 	$(MAKE) -C $(notdir $@) install-gcc
 	mkdir -p $(dir $@) && touch $@
 
@@ -664,11 +743,17 @@ stamps/build-newlib: $(NEWLIB_SRCDIR) $(NEWLIB_SRC_GIT) stamps/build-gcc-newlib-
 		--enable-newlib-io-long-double \
 		--enable-newlib-io-long-long \
 		--enable-newlib-io-c99-formats \
+		--enable-newlib-retargetable-locking \
+		--enable-newlib-reent-check-verify \
 		--enable-newlib-register-fini \
+		--enable-newlib-hw-misaligned-access=no \
 		CFLAGS_FOR_TARGET="-O2 -D_POSIX_MODE -ffunction-sections -fdata-sections $(CFLAGS_FOR_TARGET)" \
 		CXXFLAGS_FOR_TARGET="-O2 -D_POSIX_MODE -ffunction-sections -fdata-sections $(CXXFLAGS_FOR_TARGET)"
-	$(MAKE) -C $(notdir $@)
+	$(MAKE) -C $(notdir $@) -j$(PARALLEL_JOBS)
 	$(MAKE) -C $(notdir $@) install
+ifeq (@enable_doc@,--enable-doc)
+	$(MAKE) -C $(notdir $@) install-pdf
+endif
 	mkdir -p $(dir $@) && touch $@
 
 stamps/build-newlib-nano: $(NEWLIB_SRCDIR) $(NEWLIB_SRC_GIT) stamps/build-gcc-newlib-stage1
@@ -679,6 +764,8 @@ stamps/build-newlib-nano: $(NEWLIB_SRCDIR) $(NEWLIB_SRC_GIT) stamps/build-gcc-ne
 		$(CONFIGURE_HOST) \
 		--prefix=$(builddir)/install-newlib-nano \
 		--enable-newlib-reent-small \
+		--enable-newlib-retargetable-locking \
+		--enable-newlib-reent-check-verify \
 		--disable-newlib-fvwrite-in-streamio \
 		--disable-newlib-fseek-optimization \
 		--disable-newlib-wide-orient \
@@ -689,9 +776,10 @@ stamps/build-newlib-nano: $(NEWLIB_SRCDIR) $(NEWLIB_SRC_GIT) stamps/build-gcc-ne
 		--enable-newlib-nano-formatted-io \
 		--disable-newlib-supplied-syscalls \
 		--disable-nls \
+		--enable-newlib-hw-misaligned-access=no \
 		CFLAGS_FOR_TARGET="-Os -ffunction-sections -fdata-sections $(CFLAGS_FOR_TARGET)" \
 		CXXFLAGS_FOR_TARGET="-Os -ffunction-sections -fdata-sections $(CXXFLAGS_FOR_TARGET)"
-	$(MAKE) -C $(notdir $@)
+	$(MAKE) -C $(notdir $@) -j$(PARALLEL_JOBS)
 	$(MAKE) -C $(notdir $@) install
 	mkdir -p $(dir $@) && touch $@
 
@@ -756,8 +844,11 @@ stamps/build-gcc-newlib-stage2: $(GCC_SRCDIR) $(GCC_SRC_GIT) stamps/build-newlib
 		$(GCC_EXTRA_CONFIGURE_FLAGS) \
 		CFLAGS_FOR_TARGET="-Os $(CFLAGS_FOR_TARGET)" \
 		CXXFLAGS_FOR_TARGET="-Os $(CXXFLAGS_FOR_TARGET)"
-	$(MAKE) -C $(notdir $@)
+	$(MAKE) -C $(notdir $@) -j$(PARALLEL_JOBS_LIMITED)
 	$(MAKE) -C $(notdir $@) install
+ifeq (@enable_doc@,--enable-doc)
+	$(MAKE) -C $(notdir $@) install-pdf
+endif
 	mkdir -p $(dir $@) && touch $@
 
 #
@@ -783,8 +874,9 @@ stamps/build-binutils-musl: $(BINUTILS_SRCDIR) $(BINUTILS_SRC_GIT) $(PREPARATION
 		--disable-sim \
 		--disable-libdecnumber \
 		--disable-readline \
-		$(WITH_ISA_SPEC)
-	$(MAKE) -C $(notdir $@)
+		$(WITH_ISA_SPEC) \
+		$(WITH_PRIV_SPEC)
+	$(MAKE) -C $(notdir $@) -j$(PARALLEL_JOBS)
 	$(MAKE) -C $(notdir $@) install
 	mkdir -p $(dir $@) && touch $@
 
@@ -820,7 +912,7 @@ stamps/build-gcc-musl-stage1: $(GCC_SRCDIR) $(GCC_SRC_GIT) stamps/build-binutils
 		$(GCC_EXTRA_CONFIGURE_FLAGS) \
 		CFLAGS_FOR_TARGET="-O2 $(CFLAGS_FOR_TARGET)" \
 		CXXFLAGS_FOR_TARGET="-O2 $(CXXFLAGS_FOR_TARGET)"
-	$(MAKE) -C $(notdir $@) inhibit-libc=true all-gcc
+	$(MAKE) -C $(notdir $@) inhibit-libc=true all-gcc -j$(PARALLEL_JOBS)
 	$(MAKE) -C $(notdir $@) inhibit-libc=true install-gcc
 	$(MAKE) -C $(notdir $@) inhibit-libc=true all-target-libgcc
 	$(MAKE) -C $(notdir $@) inhibit-libc=true install-target-libgcc
@@ -889,7 +981,7 @@ stamps/build-gcc-musl-stage2: $(GCC_SRCDIR) $(GCC_SRC_GIT) stamps/build-musl-lin
 		$(GCC_EXTRA_CONFIGURE_FLAGS) \
 		CFLAGS_FOR_TARGET="-O2 $(CFLAGS_FOR_TARGET)" \
 		CXXFLAGS_FOR_TARGET="-O2 $(CXXFLAGS_FOR_TARGET)"
-	$(MAKE) -C $(notdir $@)
+	$(MAKE) -C $(notdir $@) -j$(PARALLEL_JOBS)
 	$(MAKE) -C $(notdir $@) install
 	cp -a $(INSTALL_DIR)/$(MUSL_TUPLE)/lib* $(SYSROOT)
 	mkdir -p $(dir $@) && touch $@
@@ -899,7 +991,7 @@ stamps/build-spike: $(SPIKE_SRCDIR) $(SPIKE_SRC_GIT) $(PREPARATION_STAMP)
 	mkdir $(notdir $@)
 	cd $(notdir $@) && $</configure \
 		--prefix=$(INSTALL_DIR)
-	$(MAKE) -C $(notdir $@)
+	$(MAKE) -C $(notdir $@) -j$(PARALLEL_JOBS)
 	$(MAKE) -C $(notdir $@) install
 	mkdir -p $(dir $@)
 	date > $@
@@ -934,12 +1026,34 @@ stamps/build-qemu: $(QEMU_SRCDIR) $(QEMU_SRC_GIT) $(PREPARATION_STAMP)
 	rm -rf $@ $(notdir $@)
 	mkdir $(notdir $@)
 	cd $(notdir $@) && $</configure \
-		--prefix=$(INSTALL_DIR) \
+		--prefix=$(INSTALL_DIR)/../qemu/ \
+		--bindir=bin/ \
 		--target-list=$(QEMU_TARGETS) \
 		--interp-prefix=$(INSTALL_DIR)/sysroot \
+		$(QEMU_OPTS) \
+		--enable-slirp \
 		--python=python3
-	$(MAKE) -C $(notdir $@)
-	$(MAKE) -C $(notdir $@) install
+	$(MAKE) -C $(notdir $@) install -j$(PARALLEL_JOBS)
+	mkdir -p $(dir $@)
+	date > $@
+
+stamps/build-openocd: $(OPENOCD_SRCDIR) $(OPENOCD_SRC_GIT) $(PREPARATION_STAMP)
+	rm -rf $@ $(notdir $@)
+	mkdir $(notdir $@)
+	cd $(OPENOCD_SRCDIR) && ./bootstrap && cd -
+	cd $(notdir $@) && $</configure \
+		--prefix=$(INSTALL_DIR)/../openocd \
+		$(OPENOCD_OPTS) \
+		--enable-openjtag \
+		--enable-ftdi \
+		--enable-ftdi-cjtag \
+		--enable-ftd2xx \
+		--enable-internal-libjaylink \
+		--enable-jlink
+	$(MAKE) -C $(notdir $@) -j$(PARALLEL_JOBS)
+	$(MAKE) -C $(notdir $@) pdf
+	$(MAKE) -C $(notdir $@) install-strip
+	$(MAKE) -C $(notdir $@) install-pdf
 	mkdir -p $(dir $@)
 	date > $@
 
@@ -955,49 +1069,132 @@ stamps/build-llvm-linux: $(LLVM_SRCDIR) $(LLVM_SRC_GIT) $(BINUTILS_SRCDIR) $(BIN
 	# Without a proper GCC install directory libgcc won't be found.
 	# As a workaround we have to merge both paths:
 	mkdir -p $(SYSROOT)/lib/
-	ln -s -f $(INSTALL_DIR)/lib/gcc $(SYSROOT)/lib/gcc
-	rm -rf $@ $(notdir $@)
-	mkdir $(notdir $@)
+	# remove $(SYSROOT)/lib/gcc symbolic link first
+	rm -f $(SYSROOT)/lib/gcc
+	# symbolic link use relative path
+	ln -s ../../lib/gcc -t $(SYSROOT)/lib
+	# rm -rf $@ $(notdir $@) # Skip clearing for LLVM output dir, let LLVM decide
+	test -d $(notdir $@) || mkdir $(notdir $@)
 	cd $(notdir $@) && ln -f -s $(SYSROOT) sysroot
+	$(GENERATE_LLVM_MULTILIB_CMD_LINUX)
 	cd $(notdir $@) && \
-	    cmake $(LLVM_SRCDIR)/llvm \
-	    -DCMAKE_INSTALL_PREFIX=$(INSTALL_DIR) \
-	    -DCMAKE_BUILD_TYPE=Release \
-	    -DLLVM_TARGETS_TO_BUILD="RISCV" \
-	    -DLLVM_ENABLE_PROJECTS="clang;lld" \
-	    -DLLVM_ENABLE_RUNTIMES="compiler-rt;libcxx;libcxxabi;libunwind" \
-	    -DLLVM_DEFAULT_TARGET_TRIPLE="$(LINUX_TUPLE)" \
-	    -DDEFAULT_SYSROOT="../sysroot" \
-	    -DLLVM_RUNTIME_TARGETS=$(call make_tuple,$(XLEN),linux-gnu) \
-	    -DLLVM_INSTALL_TOOLCHAIN_ONLY=On \
-	    -DLLVM_BINUTILS_INCDIR=$(BINUTILS_SRCDIR)/include \
-	    -DLLVM_PARALLEL_LINK_JOBS=4
-	$(MAKE) -C $(notdir $@)
-	$(MAKE) -C $(notdir $@) install
-	cp $(notdir $@)/lib/riscv$(XLEN)-unknown-linux-gnu/libc++* $(SYSROOT)/lib
-	cp $(notdir $@)/lib/LLVMgold.so  $(INSTALL_DIR)/lib
-	cd $(INSTALL_DIR)/bin && ln -s -f clang $(LINUX_TUPLE)-clang && ln -s -f clang++ $(LINUX_TUPLE)-clang++
+		cmake -G Ninja $(LLVM_SRCDIR)/llvm \
+		-DCMAKE_INSTALL_PREFIX=$(INSTALL_DIR) \
+		$(LLVM_CMAKE_COMPILE_OPTS) \
+		-DLLVM_TARGETS_TO_BUILD="RISCV" \
+		-DLLVM_ENABLE_PROJECTS="clang;lld;clang-tools-extra" \
+		-DCLANG_DEFAULT_RTLIB=libgcc \
+		-DCLANG_DEFAULT_CXX_STDLIB=libstdc++ \
+		-DCLANG_DEFAULT_LINKER=lld \
+		-DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
+		-DLLVM_ENABLE_SPHINX=ON \
+		-DLLVM_ENABLE_DOXYGEN=ON \
+		-DLLVM_BUILD_LLVM_DYLIB=OFF \
+		-DLLVM_ENABLE_PIC=OFF \
+		-DLLVM_DEFAULT_TARGET_TRIPLE="$(LINUX_TUPLE)" \
+		-DLLVM_RUNTIME_TARGETS=$(LINUX_TUPLE) \
+		-DDEFAULT_SYSROOT="../sysroot" \
+		-DLLVM_BINUTILS_INCDIR=`find $(INSTALL_DIR) -name plugin-api.h | xargs dirname` \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DLLVM_PARALLEL_COMPILE_JOBS=$(PARALLEL_JOBS) \
+		-DLLVM_PARALLEL_LINK_JOBS=1 \
+		-DLLVM_FORCE_VC_REPOSITORY=ssh://git@sw-gitlab.int.corelabtech.com:20248/swdev/mcu/llvm-project.git
+	ninja -C $(notdir $@) -j$(PARALLEL_JOBS)
+	ninja -C $(notdir $@) install
+	# Build shared/static OpenMP libraries on RV64.
+	if test $(XLEN) -eq 64; then \
+	    mkdir $(notdir $@)/openmp-shared; \
+	    cmake -S$(LLVM_SRCDIR)/openmp \
+	        -B$(notdir $@)/openmp-shared \
+	        -DCMAKE_INSTALL_PREFIX=$(SYSROOT) \
+	        -DCMAKE_C_COMPILER=$(INSTALL_DIR)/bin/clang \
+	        -DCMAKE_CXX_COMPILER=$(INSTALL_DIR)/bin/clang++ \
+	        -DOPENMP_ENABLE_LIBOMPTARGET=Off \
+	        -DCMAKE_BUILD_TYPE=Release \
+	        -DLIBOMP_ARCH=riscv64 \
+	        -DLIBOMP_HAVE_WARN_SHARED_TEXTREL_FLAG=On \
+	        -DLIBOMP_HAVE_AS_NEEDED_FLAG=On \
+	        -DLIBOMP_HAVE_VERSION_SCRIPT_FLAG=On \
+	        -DLIBOMP_HAVE_STATIC_LIBGCC_FLAG=On \
+	        -DLIBOMP_HAVE_Z_NOEXECSTACK_FLAG=On \
+	        -DDISABLE_OMPD_GDB_PLUGIN=On \
+	        -DLIBOMP_OMPD_GDB_SUPPORT=Off \
+	        -DLIBOMP_ENABLE_SHARED=On; \
+	    $(MAKE) -C $(notdir $@)/openmp-shared; \
+	    $(MAKE) -C $(notdir $@)/openmp-shared install; \
+	    mkdir $(notdir $@)/openmp-static; \
+	    cmake -S$(LLVM_SRCDIR)/openmp \
+	        -B$(notdir $@)/openmp-static \
+	        -DCMAKE_INSTALL_PREFIX=$(SYSROOT) \
+	        -DCMAKE_C_COMPILER=$(INSTALL_DIR)/bin/clang \
+	        -DCMAKE_CXX_COMPILER=$(INSTALL_DIR)/bin/clang++ \
+	        -DOPENMP_ENABLE_LIBOMPTARGET=Off \
+	        -DCMAKE_BUILD_TYPE=Release \
+	        -DLIBOMP_ARCH=riscv64 \
+	        -DLIBOMP_HAVE_WARN_SHARED_TEXTREL_FLAG=On \
+	        -DLIBOMP_HAVE_AS_NEEDED_FLAG=On \
+	        -DLIBOMP_HAVE_VERSION_SCRIPT_FLAG=On \
+	        -DLIBOMP_HAVE_STATIC_LIBGCC_FLAG=On \
+	        -DLIBOMP_HAVE_Z_NOEXECSTACK_FLAG=On \
+	        -DDISABLE_OMPD_GDB_PLUGIN=On \
+	        -DLIBOMP_OMPD_GDB_SUPPORT=Off \
+	        -DLIBOMP_ENABLE_SHARED=Off; \
+	    $(MAKE) -C $(notdir $@)/openmp-static; \
+	    $(MAKE) -C $(notdir $@)/openmp-static install; \
+	fi
+	cd $(INSTALL_DIR)/bin && \
+		ln -sf clang$(EXE_SUFFIX) $(LINUX_TUPLE)-clang$(EXE_SUFFIX) && \
+		ln -sf clang++$(EXE_SUFFIX) $(LINUX_TUPLE)-clang++$(EXE_SUFFIX) && \
+		ln -sf clang-format$(EXE_SUFFIX) clang-format-20$(EXE_SUFFIX)
+ifeq (@enable_doc@,--enable-doc)
+	ninja -C $(notdir $@) docs-clang-html docs-lld-html docs-llvm-html
+	rm -rf $(DOC_DIR)/llvm
+	mkdir -p $(DOC_DIR)/llvm
+	for docloc in docs tools/clang/docs tools/lld/docs; \
+		do mkdir -p $(DOC_DIR)/llvm/$${docloc} \
+			&& cp -rf $(notdir $@)/$${docloc}/html $(DOC_DIR)/llvm/$${docloc} ; done
+endif
 	mkdir -p $(dir $@) && touch $@
 
 stamps/build-llvm-newlib: $(LLVM_SRCDIR) $(LLVM_SRC_GIT) $(BINUTILS_SRCDIR) $(BINUTILS_SRC_GIT) \
                           stamps/build-gcc-newlib-stage2
-	rm -rf $@ $(notdir $@)
-	mkdir $(notdir $@)
+	# rm -rf $@ $(notdir $@) # Skip clearing for LLVM output dir, let LLVM decide
+	test -d $(notdir $@) || mkdir $(notdir $@)
+	$(GENERATE_LLVM_MULTILIB_CMD)
 	cd $(notdir $@) && \
-	    cmake $(LLVM_SRCDIR)/llvm \
+	    cmake -G Ninja $(LLVM_SRCDIR)/llvm \
 	    -DCMAKE_INSTALL_PREFIX=$(INSTALL_DIR) \
-	    -DCMAKE_BUILD_TYPE=Release \
-	    -DLLVM_TARGETS_TO_BUILD="RISCV" \
-	    -DLLVM_ENABLE_PROJECTS="clang;lld" \
-	    -DLLVM_DEFAULT_TARGET_TRIPLE="$(NEWLIB_TUPLE)" \
-	    -DLLVM_INSTALL_TOOLCHAIN_ONLY=On \
-	    -DLLVM_BINUTILS_INCDIR=$(BINUTILS_SRCDIR)/include \
-	    -DLLVM_PARALLEL_LINK_JOBS=4
-	$(MAKE) -C $(notdir $@)
-	$(MAKE) -C $(notdir $@) install
-	cp $(notdir $@)/lib/LLVMgold.so  $(INSTALL_DIR)/lib
-	cd $(INSTALL_DIR)/bin && ln -s -f clang $(NEWLIB_TUPLE)-clang && \
-	    ln -s -f clang++ $(NEWLIB_TUPLE)-clang++
+		$(LLVM_CMAKE_COMPILE_OPTS) \
+		-DLLVM_TARGETS_TO_BUILD="RISCV" \
+		-DLLVM_ENABLE_PROJECTS="clang;lld;clang-tools-extra" \
+		-DCLANG_DEFAULT_RTLIB=libgcc \
+		-DCLANG_DEFAULT_CXX_STDLIB=libstdc++ \
+		-DCLANG_DEFAULT_LINKER=lld \
+		-DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
+		-DLLVM_ENABLE_SPHINX=ON \
+		-DLLVM_ENABLE_DOXYGEN=ON \
+		-DLLVM_BUILD_LLVM_DYLIB=OFF \
+		-DLLVM_ENABLE_PIC=OFF \
+		-DLLVM_DEFAULT_TARGET_TRIPLE="$(NEWLIB_TUPLE)" \
+		-DLLVM_BINUTILS_INCDIR=`find $(INSTALL_DIR) -name plugin-api.h | xargs dirname` \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DLLVM_PARALLEL_COMPILE_JOBS=$(PARALLEL_JOBS) \
+		-DLLVM_PARALLEL_LINK_JOBS=1 \
+		-DLLVM_FORCE_VC_REPOSITORY=ssh://git@sw-gitlab.int.corelabtech.com:20248/swdev/mcu/llvm-project.git
+	ninja -C $(notdir $@) -j$(PARALLEL_JOBS)
+	ninja -C $(notdir $@) install
+	cd $(INSTALL_DIR)/bin && \
+		ln -sf clang$(EXE_SUFFIX) $(NEWLIB_TUPLE)-clang$(EXE_SUFFIX) && \
+		ln -sf clang++$(EXE_SUFFIX) $(NEWLIB_TUPLE)-clang++$(EXE_SUFFIX) && \
+		ln -sf clang-format$(EXE_SUFFIX) clang-format-20$(EXE_SUFFIX)
+ifeq (@enable_doc@,--enable-doc)
+	ninja -C $(notdir $@) docs-clang-html docs-lld-html docs-llvm-html
+	rm -rf $(DOC_DIR)/llvm
+	mkdir -p $(DOC_DIR)/llvm
+	for docloc in docs tools/clang/docs tools/lld/docs; \
+		do mkdir -p $(DOC_DIR)/llvm/$${docloc} \
+			&& cp -rf $(notdir $@)/$${docloc}/html $(DOC_DIR)/llvm/$${docloc} ; done
+endif
 	mkdir -p $(dir $@) && touch $@
 
 stamps/build-dejagnu: $(DEJAGNU_SRCDIR) $(DEJAGNU_SRC_GIT) $(PREPARATION_STAMP)
@@ -1157,6 +1354,13 @@ distclean: clean
 
 # All of the packages install themselves, so our install target does nothing.
 install:
+
+# Strip binaries after packages installed
+strip:
+	@echo "Strip debug symbols of all installed binaries in $(INSTALL_DIR)"
+	cd $(INSTALL_DIR)/../ && for chkdir in gcc openocd qemu; \
+		do if [ -d $$chkdir ] ; then for stpfile in $$($(FIND_STRIP_FILES)); \
+		do echo "Strip debug symbols of $$stpfile" ; strip -s $$stpfile || true ; done; fi; done
 
 # Rebuilding Makefile.
 Makefile: $(srcdir)/Makefile.in config.status
